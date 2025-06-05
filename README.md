@@ -25,4 +25,4 @@ It will generate traces and metrics.
 
 ```bash
 curl -X GET http://localhost:5000/generate-hierarchical
-    ```
+```
