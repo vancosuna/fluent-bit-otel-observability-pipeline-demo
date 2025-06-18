@@ -1,13 +1,13 @@
 extensions:
-      health_check:
-        endpoint: localhost:13133
-        path: /
-      sigv4auth:
-        region: us-east-1
-        service: "osis"
-        assume_role:
-          arn: arn:aws:iam::767397760342:role/observability-os-ingestion-role-svc # Make sure this role has appropriate permissions for OSIS
-          sts_region: us-east-1
+  health_check:
+    endpoint: localhost:13133
+    path: /
+  sigv4auth:
+    region: us-east-1
+    service: "osis"
+    assume_role:
+      arn: arn:aws:iam::767397760342:role/observability-os-ingestion-role-svc # Make sure this role has appropriate permissions for OSIS
+      sts_region: us-east-1
 receivers:
   otlp:
     protocols:
