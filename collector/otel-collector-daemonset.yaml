@@ -1,0 +1,180 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: stori-observability-collector
+  labels:
+    app: stori-observability-collector
+spec:
+  selector:
+    matchLabels:
+      app: stori-observability-collector
+  template:
+    metadata:
+      labels:
+        app: stori-observability-collector
+    spec:
+      # If using IRSA, specify the service account here
+      # serviceAccountName: observability-adot-collector-sa
+      hostNetwork: true # Often used for DaemonSets that need to bind to host ports or access host network. Consider if really needed.
+      dnsPolicy: ClusterFirstWithHostNet # Required if hostNetwork is true
+      containers:
+        - name: nginx-proxy
+          image: nginx:1.27.4
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo '
+              worker_processes auto;
+              events { worker_connections 1024; }
+              http {
+                  server {
+                      listen 80;
+                      location /health {
+                          proxy_pass http://127.0.0.1:13133;
+                      }
+                      location / {
+                          proxy_pass http://127.0.0.1:4318;
+                      }
+                  }
+              }
+              ' > /etc/nginx/nginx.conf && nginx -g "daemon off;"
+          ports:
+            - containerPort: 80
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "50m" # Example: Adjust based on your needs
+              memory: "64Mi" # Example: Adjust based on your needs
+            limits:
+              cpu: "100m" # Example: Adjust based on your needs
+              memory: "128Mi" # Example: Adjust based on your needs
+          volumeMounts:
+            # If you need to persist logs or config, define volumes
+            # - name: nginx-config
+            #   mountPath: /etc/nginx/nginx.conf
+            #   subPath: nginx.conf
+          # Kubernetes logging typically sends stdout/stderr to a node-level agent
+          # No specific log configuration needed here unless you use a sidecar.
+        - name: otel-collector
+          image: public.ecr.aws/aws-observability/aws-otel-collector:v0.43.1
+          env:
+            - name: AOT_CONFIG_CONTENT
+              valueFrom:
+                configMapKeyRef:
+                  name: otel-collector-config
+                  key: config.yaml
+          ports:
+            - containerPort: 4318 # OTLP HTTP/gRPC endpoint
+              protocol: TCP
+            - containerPort: 13133 # Health check endpoint
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 13133
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 13133
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "256m" # Corresponds to 256 in AWS (256 CPU units = 0.25 vCPU)
+              memory: "512Mi" # Corresponds to 0.5GB
+            limits:
+              cpu: "256m"
+              memory: "512Mi"
+      # volumes:
+      #   - name: nginx-config
+      #     configMap:
+      #       name: nginx-config-map
+      #       items:
+      #         - key: nginx.conf
+      #           path: nginx.conf
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      	maxUnavailable: 1 # How many pods can be unavailable during an update
+  	minReadySeconds: 10 # Minimum number of seconds for which a newly created pod should be ready
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+data:
+  config.yaml: |
+    extensions:
+      health_check:
+        endpoint: localhost:13133
+        path: /
+      sigv4auth:
+        region: us-east-1
+        service: "osis"
+        assume_role:
+          arn: arn:aws:iam::767397760342:role/observability-os-ingestion-role-svc # Make sure this role has appropriate permissions for OSIS
+          sts_region: us-east-1
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+          http:
+            endpoint: 0.0.0.0:4318
+            traces_url_path: /v1/telemetry/traces
+            logs_url_path: /v1/telemetry/logs
+    processors:
+      batch/traces:
+        timeout: 1s
+        send_batch_size: 500
+      batch/logs:
+        timeout: 1s
+        send_batch_size: 100
+    exporters:
+      otlphttp:
+        traces_endpoint: https://stori-obs-traces-dev-svc-pxed6vt257zytubbvh4hm2izo4.us-east-1.osis.amazonaws.com/stori-obs-traces-dev-svc/v1/traces # Use appropriate endpoint for dev/qa/prod
+        logs_endpoint: https://stori-obs-logs-dev-svc-uukfwwmkelwc7fkfmvpbuhxyzq.us-east-1.osis.amazonaws.com/stori-obs-logs-dev-svc/v1/logs # Use appropriate endpoint for dev/qa/prod
+        auth:
+          authenticator: sigv4auth
+        compression: none
+    service:
+      extensions: [health_check, sigv4auth]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch/traces]
+          exporters: [otlphttp]
+        logs:
+          receivers: [otlp]
+          processors: [batch/logs]
+          exporters: [otlphttp]
+---
+# If you need to expose this service within the cluster
+apiVersion: v1
+kind: Service
+metadata:
+  name: stori-observability-collector-internal
+spec:
+  selector:
+    app: stori-observability-collector
+  ports:
+    - protocol: TCP
+      port: 80 # This is the port for the nginx-proxy
+      targetPort: 80
+  type: ClusterIP # Internal to the cluster
+---
+
+# Service Account and RoleBinding (if using IAM Roles for Service Accounts - IRSA on EKS)
+# apiVersion: v1
+# kind: ServiceAccount
+# metadata:
+#   name: observability-adot-collector-sa
+#   annotations:
+#     eks.amazonaws.com/role-arn:
+# 	arn:aws:iam::767397760342:role/observability-os-ingestion-role-svc 
+# Replace with your actual role ARN
