@@ -1,30 +1,45 @@
+extensions:
+      health_check:
+        endpoint: localhost:13133
+        path: /
+      sigv4auth:
+        region: us-east-1
+        service: "osis"
+        assume_role:
+          arn: arn:aws:iam::767397760342:role/observability-os-ingestion-role-svc # Make sure this role has appropriate permissions for OSIS
+          sts_region: us-east-1
 receivers:
   otlp:
     protocols:
       grpc:
       http:
-        endpoint: "0.0.0.0:3030"
-
-
+        endpoint: 0.0.0.0:4318
+        traces_url_path: /v1/telemetry/traces
+        logs_url_path: /v1/telemetry/logs
+processors:
+  batch/traces:
+    timeout: 1s
+    send_batch_size: 500
+  batch/logs:
+    timeout: 1s
+    send_batch_size: 100
+    
 exporters:
-  otlp:
-    # disable tls
-    endpoint: "jaeger:4317"
-    tls:
-      insecure: true
-  logging:
-
-  prometheus:
-    endpoint: "0.0.0.0:8889"
-
+  otlphttp:
+    traces_endpoint: https://stori-obs-traces-dev-svc-pxed6vt257zytubbvh4hm2izo4.us-east-1.osis.amazonaws.com/stori-obs-traces-dev-svc/v1/traces # Use appropriate endpoint for dev/qa/prod
+    logs_endpoint: https://stori-obs-logs-dev-svc-uukfwwmkelwc7fkfmvpbuhxyzq.us-east-1.osis.amazonaws.com/stori-obs-logs-dev-svc/v1/logs # Use appropriate endpoint for dev/qa/prod
+    auth:
+      authenticator: sigv4auth
+    compression: none
+    
 service:
+  extensions: [health_check, sigv4auth]
   pipelines:
-    logs:
-      receivers: [otlp]
-      exporters: [logging]
     traces:
       receivers: [otlp]
-      exporters: [logging, otlp]
-    metrics:
+      processors: [batch/traces]
+      exporters: [otlphttp]
+    logs:
       receivers: [otlp]
-      exporters: [logging, prometheus]
+      processors: [batch/logs]
+      exporters: [otlphttp]
